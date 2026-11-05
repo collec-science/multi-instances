@@ -1,4 +1,6 @@
 #!/bin/bash
+set -euo pipefail
+
 # Create a new instance
 RACINE="/var/www/collec2App/"
 RACINESED="\/var\/www\/collec2App\/"
@@ -7,10 +9,8 @@ REPOSITORY="/var/local/collec-science/multi-instances"
 INSTANCES="$REPOSITORY/instances.csv"
 
 # Variables of environment
-DATABASE=collec_$INSTANCE
 LOGIN=collec
 PASSWORD=collecPassword
-URL=$INSTANCE.collec-science.inrae.fr
 
 # gestion des parametres
 OK=0
@@ -32,6 +32,8 @@ do
     fi
 done
 
+DATABASE=collec_$INSTANCE
+URL=$INSTANCE.collec-science.inrae.fr
 echo "Create the instance $INSTANCE"
 ENV="$RACINE/env"
 FOLDER="$RACINE$INSTANCE"
@@ -49,6 +51,7 @@ chmod 640 id_collec
 
 # Update parameters of environment
 cp $ENV .env
+chmod 640 .env
 
 sed -i "s/https:\/\/collec.mysociety.com/https:\/\/$URL/" .env
 sed -i "s/database.default.database = collec/database.default.database = $DATABASE/" .env
@@ -64,7 +67,7 @@ chgrp -R www-data $FOLDER
 chmod 770 $FOLDER/temp
 
 # Generate Apache virtual host
-if [ $MODE == "HEADER" ] ;
+if [ $IDENTMODE == "HEADER" ] ;
 then
     VHOST="$REPOSITORY/libs/collec2-header.conf"
 else
@@ -86,33 +89,33 @@ fi
 
 echo "Create the database"
 DBSCRIPT="$REPOSITORY/libs/createDatabase.sql"
-sed -i "s/dbcollec/$DATABASE/" $DBSCRIPT
-su postgres -c "psql -f $DBSCRIPT"
-sed -i "s/$DATABASE/dbcollec/" $DBSCRIPT
+sed "s/dbcollec/$DATABASE/" $DBSCRIPT | su postgres -c "psql"
 
 # add the first account with admin rights
 
 SQL="insert into gacl.acllogin (login,logindetail) values ('$LOGINADMIN','administrator')"
 ADDRESS=postgresql://$LOGIN:$PASSWORD@localhost/$DATABASE
-psql $ADDRESS -c "$SQL"
+CMDS=(-c "$SQL")
 SQL="insert into gacl.acllogingroup (acllogin_id, aclgroup_id) values (2,1)"
-psql $ADDRESS -c "$SQL"
+CMDS+=(-c "$SQL")
 
 if [ $IDENTMODE == "HEADER" ]
 then
     SQL="insert into gacl.logingestion (login, actif) values ('$LOGINADMIN', 1)"
-    psql $ADDRESS -c "$SQL"
+    CMDS+=(-c "$SQL")
 fi
 
 # update parameters in dbparam
 SQL="update col.dbparam set dbparam_value = '$INSTANCE' where dbparam_name = 'APPLI_code';"
-psql $ADDRESS -c "$SQL"
+CMDS+=(-c "$SQL")
 SQL="update col.dbparam set dbparam_value = 'Collec-Science - $INSTANCE' where dbparam_name = 'otp_issuer' or dbparam_name = 'APPLI_title';"
-psql $ADDRESS -c "$SQL"
+CMDS+=(-c "$SQL")
+# -1 runs all -c commands in a single transaction
+psql -1 -v ON_ERROR_STOP=1 $ADDRESS "${CMDS[@]}"
 
 # Add the instance in the instances.csv file
 if [ ! -e $INSTANCES ]; then
-    cp $DIRECTORY/instances-dist.csv $DIRECTORY/instances.csv
+    cp $REPOSITORY/instances-dist.csv $REPOSITORY/instances.csv
 fi
 
 echo "$INSTANCE;localhost;$DATABASE;$LOGIN;$PASSWORD;" >> $INSTANCES
